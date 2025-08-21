@@ -79,7 +79,6 @@ if all(uploaded_videos.values()):
 
     caps = {d: cv2.VideoCapture(temp_files[d]) for d in directions}
     frame_placeholder = st.empty()
-
     run = st.checkbox("▶️ Start Simulation")
 
     while run:
@@ -121,6 +120,7 @@ if all(uploaded_videos.values()):
             is_green = (signal_state == 'NS' and d in ['North', 'South']) or (signal_state == 'EW' and d in ['East', 'West'])
             frames[d] = annotate_signal(frames[d], is_green, d)
 
+        # Combine frames into a grid (2x2)
         top = np.hstack((frames['North'], frames['East']))
         bottom = np.hstack((frames['South'], frames['West']))
         grid = np.vstack((top, bottom))
