@@ -2,16 +2,15 @@ import cv2
 import numpy as np
 import time
 import streamlit as st
+import tempfile
 
 # --- CONFIG ---
 largura_min = 80
 altura_min = 80
 offset = 6
 pos_linha = 550
-delay = 60
 
 directions = ['North', 'East', 'South', 'West']
-caps = {d: cv2.VideoCapture(f'{d.lower()}.mp4') for d in directions}
 subtractors = {d: cv2.bgsegm.createBackgroundSubtractorMOG() for d in directions}
 detecs = {d: [] for d in directions}
 carros = {d: 0 for d in directions}
@@ -64,51 +63,70 @@ def annotate_signal(frame, is_green, direction):
 
 # --- STREAMLIT UI ---
 st.title("🚦 Smart Traffic Light Controller (Simulation)")
-st.write("Simulates traffic light control using OpenCV + background subtraction")
+st.write("Simulates traffic light control using uploaded videos for each direction")
 
-frame_placeholder = st.empty()
+uploaded_videos = {}
+for d in directions:
+    uploaded_videos[d] = st.file_uploader(f"Upload {d} video", type=["mp4", "avi", "mov"], key=d)
 
-while True:
-    frames = {}
-    passed_now = 0
+if all(uploaded_videos.values()):
+    # Save uploads to temp files
+    temp_files = {}
+    for d, file in uploaded_videos.items():
+        tfile = tempfile.NamedTemporaryFile(delete=False)
+        tfile.write(file.read())
+        temp_files[d] = tfile.name
 
-    for d in directions:
-        ret, frame = caps[d].read()
-        if not ret:
-            st.write("Video finished or missing.")
-            st.stop()
-        frame = cv2.resize(frame, (640, 360))
-        frame, carros[d], new_passed = process_frame(frame, subtractors[d], detecs[d], carros[d])
-        frames[d] = frame
+    caps = {d: cv2.VideoCapture(temp_files[d]) for d in directions}
+    frame_placeholder = st.empty()
 
-        if (signal_state == 'NS' and d in ['North', 'South']) or (signal_state == 'EW' and d in ['East', 'West']):
-            passed_now += new_passed
+    run = st.checkbox("▶️ Start Simulation")
 
-    elapsed = time.time() - signal_start_time
+    while run:
+        frames = {}
+        passed_now = 0
 
-    if passed_now > 0:
-        last_vehicle_time = time.time()
+        for d in directions:
+            ret, frame = caps[d].read()
+            if not ret:
+                st.warning(f"{d} video finished.")
+                run = False
+                break
+            frame = cv2.resize(frame, (640, 360))
+            frame, carros[d], new_passed = process_frame(frame, subtractors[d], detecs[d], carros[d])
+            frames[d] = frame
 
-    ns_count = carros['North'] + carros['South']
-    ew_count = carros['East'] + carros['West']
+            if (signal_state == 'NS' and d in ['North', 'South']) or (signal_state == 'EW' and d in ['East', 'West']):
+                passed_now += new_passed
 
-    if elapsed >= 60 or (time.time() - last_vehicle_time >= 5):
-        signal_state = 'EW' if signal_state == 'NS' else 'NS'
-        signal_start_time = time.time()
-        last_vehicle_time = time.time()
+        elapsed = time.time() - signal_start_time
 
-    if ns_count > ew_count:
-        signal_state = 'NS'
-    elif ew_count > ns_count:
-        signal_state = 'EW'
+        if passed_now > 0:
+            last_vehicle_time = time.time()
 
-    for d in directions:
-        is_green = (signal_state == 'NS' and d in ['North', 'South']) or (signal_state == 'EW' and d in ['East', 'West'])
-        frames[d] = annotate_signal(frames[d], is_green, d)
+        ns_count = carros['North'] + carros['South']
+        ew_count = carros['East'] + carros['West']
 
-    top = np.hstack((frames['North'], frames['East']))
-    bottom = np.hstack((frames['South'], frames['West']))
-    grid = np.vstack((top, bottom))
+        if elapsed >= 60 or (time.time() - last_vehicle_time >= 5):
+            signal_state = 'EW' if signal_state == 'NS' else 'NS'
+            signal_start_time = time.time()
+            last_vehicle_time = time.time()
 
-    grid_rgb = cv2.cvtColor(grid, cv2.COLOR_BGR2RGB)
-    frame_placeholder.image(grid_rgb)
+        if ns_count > ew_count:
+            signal_state = 'NS'
+        elif ew_count > ns_count:
+            signal_state = 'EW'
+
+        for d in directions:
+            is_green = (signal_state == 'NS' and d in ['North', 'South']) or (signal_state == 'EW' and d in ['East', 'West'])
+            frames[d] = annotate_signal(frames[d], is_green, d)
+
+        top = np.hstack((frames['North'], frames['East']))
+        bottom = np.hstack((frames['South'], frames['West']))
+        grid = np.vstack((top, bottom))
+
+        grid_rgb = cv2.cvtColor(grid, cv2.COLOR_BGR2RGB)
+        frame_placeholder.image(grid_rgb)
+
+else:
+    st.info("Please upload **all four direction videos** to start the simulation 🚗🚙🚛")
