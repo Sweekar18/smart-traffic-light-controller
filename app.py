@@ -1,79 +1,114 @@
 import cv2
 import numpy as np
-import tempfile
-import streamlit as st
 import time
+import streamlit as st
 
-# Streamlit app title
-st.title("🚦 Smart Traffic Light Controller")
+# --- CONFIG ---
+largura_min = 80
+altura_min = 80
+offset = 6
+pos_linha = 550
+delay = 60
 
-# Upload 4 videos (North, East, South, West)
-st.sidebar.header("Upload Traffic Videos")
-north_file = st.sidebar.file_uploader("North", type=["mp4", "avi", "mov"])
-east_file = st.sidebar.file_uploader("East", type=["mp4", "avi", "mov"])
-south_file = st.sidebar.file_uploader("South", type=["mp4", "avi", "mov"])
-west_file = st.sidebar.file_uploader("West", type=["mp4", "avi", "mov"])
+directions = ['North', 'East', 'South', 'West']
+caps = {d: cv2.VideoCapture(f'{d.lower()}.mp4') for d in directions}
+subtractors = {d: cv2.bgsegm.createBackgroundSubtractorMOG() for d in directions}
+detecs = {d: [] for d in directions}
+carros = {d: 0 for d in directions}
 
-# Store videos in temp files for OpenCV
-def save_temp_file(uploaded_file):
-    if uploaded_file is None:
-        return None
-    temp = tempfile.NamedTemporaryFile(delete=False)
-    temp.write(uploaded_file.read())
-    return temp.name
+signal_state = 'NS'
+signal_start_time = time.time()
+last_vehicle_time = time.time()
 
-north_path = save_temp_file(north_file)
-east_path = save_temp_file(east_file)
-south_path = save_temp_file(south_file)
-west_path = save_temp_file(west_file)
+# --- UTILS ---
+def pega_centro(x, y, w, h):
+    return x + int(w / 2), y + int(h / 2)
 
-# Initialize video captures
-caps = {}
-if north_path: caps["North"] = cv2.VideoCapture(north_path)
-if east_path: caps["East"] = cv2.VideoCapture(east_path)
-if south_path: caps["South"] = cv2.VideoCapture(south_path)
-if west_path: caps["West"] = cv2.VideoCapture(west_path)
+def process_frame(frame, subtractor, detec, count):
+    grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(grey, (3, 3), 5)
+    img_sub = subtractor.apply(blur)
+    dilat = cv2.dilate(img_sub, np.ones((5, 5)))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    dilatada = cv2.morphologyEx(dilat, cv2.MORPH_CLOSE, kernel)
+    contorno, _ = cv2.findContours(dilatada, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-# Streamlit UI controls
-st.sidebar.header("Controls")
-run_simulation = st.sidebar.checkbox("▶️ Start Simulation")
-speed = st.sidebar.slider("Simulation Speed (seconds/frame)", 0.01, 1.0, 0.1, 0.01)
-reset = st.sidebar.button("🔄 Reset Simulation")
+    cv2.line(frame, (25, pos_linha), (1200, pos_linha), (255, 127, 0), 3)
 
-# State management
-if "frame_idx" not in st.session_state or reset:
-    st.session_state.frame_idx = 0
+    vehicles_passed = 0
+    for c in contorno:
+        x, y, w, h = cv2.boundingRect(c)
+        if w >= largura_min and h >= altura_min:
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            centro = pega_centro(x, y, w, h)
+            detec.append(centro)
+            cv2.circle(frame, centro, 4, (0, 0, 255), -1)
 
-# Placeholders for video display (2x2 grid)
-col1, col2 = st.columns(2)
-north_placeholder = col1.empty()
-east_placeholder = col2.empty()
-south_placeholder = col1.empty()
-west_placeholder = col2.empty()
+    for (x, y) in detec[:]:
+        if pos_linha - offset < y < pos_linha + offset:
+            count += 1
+            vehicles_passed += 1
+            cv2.line(frame, (25, pos_linha), (1200, pos_linha), (0, 127, 255), 3)
+            detec.remove((x, y))
 
-def read_frame(cap):
-    if cap and cap.isOpened():
-        ret, frame = cap.read()
-        if ret:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            return frame
-    return np.zeros((240, 320, 3), dtype=np.uint8)  # black if missing
+    cv2.putText(frame, "VEHICLE COUNT: " + str(count), (450, 70),
+                cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 5)
+    return frame, count, vehicles_passed
 
-# Simulation loop
-if run_simulation and caps:
-    while True:
-        frames = {
-            "North": read_frame(caps.get("North")),
-            "East": read_frame(caps.get("East")),
-            "South": read_frame(caps.get("South")),
-            "West": read_frame(caps.get("West")),
-        }
+def annotate_signal(frame, is_green, direction):
+    color = (0, 255, 0) if is_green else (0, 0, 255)
+    cv2.circle(frame, (50, 50), 30, color, -1)
+    cv2.putText(frame, f"{direction} {'GREEN' if is_green else 'RED'}", (100, 70),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+    return frame
 
-        # Display in grid
-        north_placeholder.image(frames["North"], caption="North")
-        east_placeholder.image(frames["East"], caption="East")
-        south_placeholder.image(frames["South"], caption="South")
-        west_placeholder.image(frames["West"], caption="West")
+# --- STREAMLIT UI ---
+st.title("🚦 Smart Traffic Light Controller (Simulation)")
+st.write("Simulates traffic light control using OpenCV + background subtraction")
 
-        st.session_state.frame_idx += 1
-        time.sleep(speed)
+frame_placeholder = st.empty()
+
+while True:
+    frames = {}
+    passed_now = 0
+
+    for d in directions:
+        ret, frame = caps[d].read()
+        if not ret:
+            st.write("Video finished or missing.")
+            st.stop()
+        frame = cv2.resize(frame, (640, 360))
+        frame, carros[d], new_passed = process_frame(frame, subtractors[d], detecs[d], carros[d])
+        frames[d] = frame
+
+        if (signal_state == 'NS' and d in ['North', 'South']) or (signal_state == 'EW' and d in ['East', 'West']):
+            passed_now += new_passed
+
+    elapsed = time.time() - signal_start_time
+
+    if passed_now > 0:
+        last_vehicle_time = time.time()
+
+    ns_count = carros['North'] + carros['South']
+    ew_count = carros['East'] + carros['West']
+
+    if elapsed >= 60 or (time.time() - last_vehicle_time >= 5):
+        signal_state = 'EW' if signal_state == 'NS' else 'NS'
+        signal_start_time = time.time()
+        last_vehicle_time = time.time()
+
+    if ns_count > ew_count:
+        signal_state = 'NS'
+    elif ew_count > ns_count:
+        signal_state = 'EW'
+
+    for d in directions:
+        is_green = (signal_state == 'NS' and d in ['North', 'South']) or (signal_state == 'EW' and d in ['East', 'West'])
+        frames[d] = annotate_signal(frames[d], is_green, d)
+
+    top = np.hstack((frames['North'], frames['East']))
+    bottom = np.hstack((frames['South'], frames['West']))
+    grid = np.vstack((top, bottom))
+
+    grid_rgb = cv2.cvtColor(grid, cv2.COLOR_BGR2RGB)
+    frame_placeholder.image(grid_rgb)
