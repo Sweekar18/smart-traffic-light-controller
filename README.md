@@ -48,8 +48,9 @@ Video feeds:
 ## 🚀 Run This Project
 
 ```bash
-pip install opencv-contrib-python
-python main.py
+[pip install opencv-contrib-python
+python main.py]
+(https://smarttrafficlightcontroller.netlify.app/)
 ```
 
 ---
